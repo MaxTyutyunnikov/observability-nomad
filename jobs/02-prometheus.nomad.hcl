@@ -7,10 +7,10 @@ job "prometheus" {
 
     network {
       dns {
-        servers = ["172.17.0.1", "8.8.8.8", "8.8.4.4"]
+        servers = ["172.17.0.1", "1.0.0.1", "8.8.4.4"]
       }
       port "http" {
-        static = 9090
+        static = 9091
       }
     }
 
@@ -28,12 +28,21 @@ job "prometheus" {
 global:
   scrape_interval: 15s
 scrape_configs:
+  - job_name: minio-job
+    metrics_path: /minio/v2/metrics/cluster
+    scheme: http
+    static_configs:
+    - targets: ['minio.service.consul:9000']
   - job_name: 'self'
     consul_sd_configs:
-      - server: '172.17.0.1:8500'
+      - server: 'consul.service.consul:8500'
+        token: '6c8cd232-104d-0622-9899-64acd85119a7'
     relabel_configs:
+      - source_labels: [__meta_consul_service]
+        regex: '.*-sidecar-proxy'
+        action: drop
       - source_labels: [__meta_consul_service_metadata_external_source]
-        target_label: source
+        target_label: 'source'
         regex: (.*)
         replacement: '$1'
       - source_labels: [__meta_consul_service_id]
@@ -44,36 +53,49 @@ scrape_configs:
         regex: '.*,prometheus,.*'
         action: keep
       - source_labels: [__meta_consul_tags]
-        regex: ',(app|monitoring),'
+        regex: '.*,(app|monitoring|demo),.*'
         target_label:  'group'
         replacement:   '$1'
       - source_labels: [__meta_consul_service]
-        target_label: job
-      - source_labels: ['__meta_consul_node']
+        target_label: 'job'
+      - source_labels: [__meta_consul_node]
         regex:         '(.*)'
         target_label:  'instance'
+      - source_labels: [__meta_consul_tags]
+        regex: '.*,metrics_path=([^,?]*)[?,].*'
+        target_label:  '__metrics_path__'
+        replacement: '$1'
+      - source_labels: [__meta_consul_tags]
+        regex: '.*,metrics_path=([^,?]*)\?format=([^,]*),.*'
+        target_label:  '__param_format'
+        replacement: '$2'
+      - source_labels: [__meta_consul_tags]
+        regex:         '.*,source=([^,]*),.*'
+        target_label:  'source'
         replacement:   '$1'
 EOTC
         destination = "/local/prometheus.yml"
       }
       config {
-        image = "prom/prometheus:demo"
+        image = "prom/prometheus:v2.29.0"
         ports = ["http"]
         args = [
           "--config.file=/local/prometheus.yml",
-          "--web.enable-admin-api"
+          "--web.enable-admin-api",
+          "--web.listen-address=:9091",
+          "--enable-feature=remote-write-receiver",
         ]
       }
 
       resources {
         cpu    = 200
-        memory = 200
+        memory = 170
       }
 
       service {
         name = "prometheus"
         port = "http"
-        tags = ["monitoring","prometheus"]
+        tags = ["monitoring", "prometheus"]
 
         check {
           name     = "Prometheus HTTP"

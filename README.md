@@ -61,6 +61,10 @@ Then you should be able to access:
 - Prometheus => http://127.0.0.1:9090/
 - Promtail   => http://127.0.0.1:3200/
 - Loki       => http://127.0.0.1:3100/
+- Minio      => http://127.0.0.1:9000/
+- Nginx      => http://127.0.0.1:8888/ and http://127.0.0.1:8888/demo/
+- cAdvisor   => http://127.0.0.1:8080/
+- Netdata    => http://127.0.0.1:19999/
 
 You can go to the Nomad UI Jobs page to see all running jobs.
 

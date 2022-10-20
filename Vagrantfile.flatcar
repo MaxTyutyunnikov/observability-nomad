@@ -6,59 +6,242 @@ $script = <<SCRIPT
 # Nomad 1.x required due to Nomad jobs manifests
 #
 echo "Installing Nomad..."
-sudo mkdir -p /etc/nomad.d /etc/nomad /opt/nomad/data/
+sudo mkdir -p /etc/nomad.d /etc/nomad /opt/nomad/data/ /etc/consul.d
 # Error due to Flatcar default filesystems permissons restrictions
 #nomad -autocomplete-install
+
+# Consul telemetry parameters
+(
+cat <<-EOF
+{
+  "telemetry": {
+    "prometheus_retention_time": "2h",
+    "disable_hostname": false
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/telemetry.json
+
+# Consul registration as a Consul service for Prometheus scraping
+(
+cat <<-EOF
+{
+  "service": {
+    "name": "consul-service",
+    "address": "172.17.0.1",
+    "port": 8500,
+    "tags": ["monitoring","prometheus","source=system","metrics_path=/v1/agent/metrics?format=prometheus"],
+    "checks": [
+      {
+        "http":     "http://172.17.0.1:8500/",
+        "interval": "10s"
+      }
+    ]
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/consul.json
+
+# Nomad registration as a Consul service for Prometheus scraping
+(
+cat <<-EOF
+{
+  "service": {
+    "name": "nomad-service",
+    "address": "172.17.0.1",
+    "port": 4646,
+    "tags": ["monitoring","prometheus","source=system","metrics_path=/v1/metrics?format=prometheus"],
+    "checks": [
+      {
+        "http":     "http://172.17.0.1:4646/",
+        "interval": "10s"
+      }
+    ]
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/nomad.json
+
+# Netdata registration as Consul service
+(
+cat <<-EOF
+{
+  "service": {
+    "name": "netdata",
+    "address": "172.17.0.1",
+    "port": 19999,
+    "tags": ["monitoring","prometheus","source=system","metrics_path=/api/v1/allmetrics?format=prometheus"],
+    "checks": [
+      {
+        "http":     "http://localhost:19999/",
+        "interval": "10s"
+      }
+    ]
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/netdata.json
+
+# Enable and start Netdata systemd service
+sudo systemctl enable netdata.service
+sudo systemctl start netdata
+
+# Node exporter registration as Consul service
+# and Prometheus target
+(
+cat <<-EOF
+{
+  "service": {
+    "name": "node-exporter",
+    "address": "172.17.0.1",
+    "port": 9100,
+    "tags": ["monitoring","prometheus","source=system"],
+    "checks": [
+      {
+        "http":     "http://localhost:9100/health",
+        "interval": "10s"
+      }
+    ]
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/node-exporter.json
+
+# cAdvisor registration as Consul service
+# and Prometheus target
+(
+cat <<-EOF
+{
+  "service": {
+    "name": "cadvisor",
+    "address": "172.17.0.1",
+    "port": 8080,
+    "tags": ["monitoring","prometheus","source=system"],
+    "checks": [
+      {
+        "http":     "http://localhost:8080/metrics",
+        "interval": "10s"
+      }
+    ]
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/cadvisor.json
+
+# cAdvisor service systemd startup script
+(
+cat <<-EOF
+[Unit]
+Description=cAdvisor containers monitoring from Google
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+# Default port is 8080
+ExecStart=/opt/bin/cadvisor
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+) | sudo tee /etc/systemd/system/cadvisor.service
+
+# Enable and start cAdvisor systemd service
+sudo systemctl enable cadvisor.service
+sudo systemctl start cadvisor
+
+# Nginx exporter registration as Consul service
+# and Prometheus target
+(
+cat <<-EOF
+{
+  "service": {
+    "name": "nginx-exporter",
+    "address": "172.17.0.1",
+    "port": 9113,
+    "tags": ["monitoring","prometheus","source=system"],
+    "checks": [
+      {
+        "http":     "http://localhost:9113",
+        "interval": "10s"
+      }
+    ]
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/nginx-exporter.json
+
 # Consul service systemd startup script
 (
 cat <<-EOF
-  [Unit]
-  Description=consul agent
-  Requires=network-online.target
-  After=network-online.target
+[Unit]
+Description=consul agent
+Requires=network-online.target
+After=network-online.target
 
-  [Service]
-  Restart=on-failure
-  ExecStart=/opt/bin/consul agent -dev -client=0.0.0.0
-  ExecReload=/bin/kill -HUP $MAINPID
+[Service]
+Restart=on-failure
+ExecStart=/opt/bin/consul agent -dev -client=0.0.0.0 -config-dir=/etc/consul.d
+ExecReload=/bin/kill -HUP $MAINPID
+StandardOutput=journal+console
+StandardError=journal+console
 
-  [Install]
-  WantedBy=multi-user.target
+[Install]
+WantedBy=multi-user.target
+
 EOF
 ) | sudo tee /etc/systemd/system/consul.service
+
+# Enable and start Consul systemd service
 sudo systemctl enable consul.service
 sudo systemctl start consul
 
+# Nomad configuration
 (
 cat <<-EOF
-  data_dir  = "/opt/nomad/data/"
-  bind_addr = "0.0.0.0"
-  plugin "docker" {
-    config {
-      volumes {
-        enabled = true
-      }
+data_dir  = "/opt/nomad/data/"
+bind_addr = "0.0.0.0"
+plugin "docker" {
+  config {
+    volumes {
+      enabled = true
     }
   }
+}
+telemetry {
+  publish_allocation_metrics = true
+  publish_node_metrics       = true
+  prometheus_metrics         = true
+}
 EOF
-  ) | sudo tee /etc/nomad/config.hcl
+) | sudo tee /etc/nomad/config.hcl
+
+# Nomad service systemd startup script
 (
 cat <<-EOF
-  [Unit]
-  Description=nomad dev agent
-  Requires=network-online.target
-  After=network-online.target
+[Unit]
+Description=nomad dev agent
+Requires=network-online.target
+After=network-online.target
 
-  [Service]
-  Environment=PATH=/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
-  Restart=on-failure
-  ExecStart=/opt/bin/nomad agent -dev-connect -config=/etc/nomad/config.hcl
-  ExecReload=/bin/kill -HUP $MAINPID
+[Service]
+Environment=PATH=/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=on-failure
+ExecStart=/opt/bin/nomad agent -dev-connect -config=/etc/nomad/config.hcl
+ExecReload=/bin/kill -HUP $MAINPID
+StandardOutput=journal+console
+StandardError=journal+console
 
-  [Install]
-  WantedBy=multi-user.target
+[Install]
+WantedBy=multi-user.target
+
 EOF
 ) | sudo tee /etc/systemd/system/nomad.service
+
+# Enable and start Nomad systemd service
 sudo systemctl enable nomad.service
 sudo systemctl start nomad
 
@@ -67,6 +250,10 @@ sudo iptables -t nat -A PREROUTING -p udp -m udp --dport 53 -j REDIRECT --to-por
 sudo iptables -t nat -A PREROUTING -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 8600
 sudo iptables -t nat -A OUTPUT -d localhost -p udp -m udp --dport 53 -j REDIRECT --to-ports 8600
 sudo iptables -t nat -A OUTPUT -d localhost -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 8600
+sudo iptables -t nat -A OUTPUT -d 127.0.0.1 -p udp -m udp --dport 53 -j REDIRECT --to-ports 8600
+sudo iptables -t nat -A OUTPUT -d 127.0.0.1 -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 8600
+sudo iptables -t nat -A OUTPUT -d 1.0.0.1 -p udp -m udp --dport 53 -j REDIRECT --to-ports 8600
+sudo iptables -t nat -A OUTPUT -d 1.0.0.1 -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 8600
 
 echo "Pulling Docker images"
 
@@ -78,7 +265,7 @@ if [ -n "$DOCKERHUBID" ] && [ -n "$DOCKERHUBPASSWD" ]; then
   fi
 fi
 
-find /tmp/jobs -maxdepth 1 -type f -name '*.hcl' | xargs grep -E 'image\s*=\s*' | awk '{print $NF}' | sed -e 's/"//g' -e 's/:demo//' | while read j; do
+find /tmp/jobs /tmp/samples/nginx -maxdepth 1 -type f -name '*.nomad.hcl' | xargs grep -E 'image\s*=\s*' | awk '{print $NF}' | sed -e 's/"//g' -e 's/:demo//' | while read j; do
   echo "Pulling $j Docker image"
   if ! sudo docker pull $j >/dev/null; then
     echo "Exiting"
@@ -103,22 +290,213 @@ echo "Installing Grafana stack..."
 
 until nomad status
 do
-  echo "Waiting nomad to be ready...."
+  echo "Waiting for Nomad to be ready...."
   sleep 3
 done
 
+sudo curl -s https://dl.min.io/client/mc/release/linux-amd64/mc \
+  --create-dirs \
+  -o /usr/bin/mc-cli
+sudo chmod +x /usr/bin/mc-cli
+
+####/usr/bin/mc-cli config host add minio http://127.0.0.1:9000 "AKIAIOSFODNN7EXAMPLE" "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+####/usr/bin/mc-cli mb minio/tempo-bucket
+
 # Handle all Nomad job files one at a time
 # Use the naming of Nomad job files to determine scheduling order of services
-find /tmp/jobs -maxdepth 1 -type f -name '*.hcl' | sort | while read j; do
+find /tmp/jobs /tmp/samples/nginx -maxdepth 1 -type f -name '*.nomad.hcl' | sort | while read j; do
   # Job can be successfully planed (enough resources left)
   svc=$(basename $j | sed -e 's/\.nomad\.hcl//' -e 's/^[0-9][0-9]-//')
   if nomad plan $j | grep -Eq 'All tasks successfully allocated'; then
     echo "Scheduling $svc"
-    nomad run -detach $j
+    nomad run $j
   else
     echo "Error can not schedule $svc"
   fi
 done
+
+# Configuring host DNS to use Consul for resolving
+# `.consul` domain name queries
+#
+# Note that this requires the 2 first iptables
+# commands above to be activated
+#
+# See: https://learn.hashicorp.com/tutorials/consul/dns-forwarding
+#
+# Full DNS capability of host machine requires local DNS as well
+# as CloudFlare or Google
+#
+echo "Configuring DNS..."
+EXTERNALDNS=${EXTERNALDNS:-"1.1.1.1"}
+sudo sed -i -e "s/#DNS=/DNS=127.0.0.1 ${EXTERNALDNS}/" -e 's/#Domains=/Domains=~consul/' /etc/systemd/resolved.conf
+sudo systemctl restart systemd-resolved
+
+while [ "$(dig +short nginx.service.consul)" == "" ]; do
+  echo "Waiting for Nginx to be ready...."
+  sleep 10
+done
+
+echo "Installing Nginx exporter..."
+NGINX_EXPORTER_VERSION=0.9.0
+cd /tmp/
+if ! curl --fail -sSL https://github.com/nginxinc/nginx-prometheus-exporter/releases/download/v${NGINX_EXPORTER_VERSION}/nginx-prometheus-exporter_${NGINX_EXPORTER_VERSION}_linux_amd64.tar.gz -o nginx_exporter.tgz 2>/dev/null; then
+  echo "Failed to download Nginx exporter NGINX_EXPORTER_VERSION"
+  exit 1
+fi
+if ! tar zxf nginx_exporter.tgz nginx-prometheus-exporter; then
+  echo "Failed to extract Nginx exporter $NGINX_EXPORTER_VERSION"
+  exit 1
+fi
+sudo install nginx-prometheus-exporter /opt/bin/nginx-prometheus-exporter
+
+# Nginx exporter service systemd startup script
+(
+cat <<-EOF
+#!/usr/bin/env bash
+
+/opt/bin/nginx-prometheus-exporter -nginx.scrape-uri http://$(dig +short nginx.service.consul):8888/stub_status
+
+EOF
+) | sudo tee /opt/bin/nginx-exporter.sh
+
+sudo chmod 755 /opt/bin/nginx-exporter.sh
+
+# Nginx exporter service systemd startup script
+(
+cat <<-EOF
+[Unit]
+Description=Nginx monitoring
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+# Default port is 9113
+ExecStart=/opt/bin/nginx-exporter.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+) | sudo tee /etc/systemd/system/nginx-exporter.service
+
+# Enable and start Nginx exporter systemd service
+sudo systemctl enable nginx-exporter.service
+sudo systemctl start nginx-exporter
+
+while [ "$(dig +short loki.service.consul)" == "" ]; do
+  echo "Waiting for Loki to be ready...."
+  sleep 10
+done
+
+# Configuring and starting system Promtail
+#
+# This needs to be done after Loki service
+# has been launched in Docker container
+# by Nomad job scheduling
+#
+(
+cat <<-EOF
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+positions:
+  filename: /tmp/positions.yaml
+client:
+  url: http://$(dig +short loki.service.consul):3100/loki/api/v1/push
+scrape_configs:
+  - job_name: nginx
+    static_configs:
+    - targets:
+        - localhost
+      labels:
+        job: nginx
+        env: production
+        __path__: /tmp/nginx-logs/*.log
+  - job_name: journal
+    journal:
+      max_age: 1h
+      path: /var/log/journal
+      labels:
+        job: systemd
+        env: production
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: 'unit'
+EOF
+) | sudo tee /etc/promtail/promtail.yml
+
+(
+cat <<-EOF
+[Unit]
+Description=Promtail service
+After=network.target
+[Service]
+Type=simple
+ExecStart=/opt/bin/promtail -config.file /etc/promtail/promtail.yml
+[Install]
+WantedBy=multi-user.target
+EOF
+) | sudo tee /etc/systemd/system/promtail.service
+
+sudo systemctl enable promtail.service
+sudo systemctl start promtail
+
+# Promtail registration as Consul service
+# and Prometheus target
+(
+cat <<-EOF
+{
+  "service": {
+    "name": "promtail",
+    "address": "172.17.0.1",
+    "port": 9080,
+    "tags": ["monitoring","prometheus","source=system"],
+    "checks": [
+      {
+        "http":     "http://localhost:9080/metrics",
+        "interval": "10s"
+      }
+    ]
+  }
+}
+EOF
+) | sudo tee /etc/consul.d/promtail.json
+
+sudo chmod 755 /tmp/samples/nginx/load_gen.sh
+
+# Nginx load generator
+(
+cat <<-EOF
+  [Unit]
+  Description=Nginx load generator
+  Requires=network-online.target promtail.service
+  After=network-online.target promtail.service
+
+  [Service]
+  Environment=PATH=/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  Restart=on-failure
+  ExecStart=/tmp/samples/nginx/load_gen.sh
+  ExecReload=/bin/kill -HUP $MAINPID
+
+  [Install]
+  WantedBy=multi-user.target
+EOF
+) | sudo tee /etc/systemd/system/nginx-load-gen.service
+sudo systemctl enable nginx-load-gen.service
+sudo systemctl start nginx-load-gen
+
+# Reload Consul configuration for late arrivals
+sudo pkill -HUP -f /opt/bin/consul
+
+# Create default deny all intention for Consul Connect Service Mesh
+# because default Consul ACL Policy for dev agent is "allow all"
+# see: https://learn.hashicorp.com/tutorials/consul/service-mesh-with-envoy-proxy#create-a-consul-intention
+echo "Configuring Consul Connect Service Mesh default intention (deny all)"
+consul intention create -deny '*' '*'
+
 SCRIPT
 
 Vagrant.configure(2) do |config|
@@ -183,18 +561,22 @@ Vagrant.configure(2) do |config|
 #  end
 
   config.vm.box = "obourdon/flatcar-linux-observability"
-  config.vm.box_version = "2765.2.6"
+  config.vm.box_version = "3139.2.3"
   config.vm.hostname = "flatcar-nomad"
   # Flatcar Linux does not support VirtualBox Guest Additions therefore the copy
   config.vm.provision "file", source: "./jobs", destination: "/tmp/jobs"
+  config.vm.provision "file", source: "./samples", destination: "/tmp/samples"
   # Set the timezone the same as the host so that metrics & logs ingested have the right timestamp.
   config.vm.provision :shell, :inline => "echo setting Timezone to " + ltz + "; sudo timedatectl set-timezone " + ltz, run: "always"
-  config.vm.provision "shell", inline: $script, env: {"DOCKERHUBID"=>ENV['DOCKERHUBID'], "DOCKERHUBPASSWD"=>ENV['DOCKERHUBPASSWD']}, privileged: false
+  config.vm.provision "shell", inline: $script, env: {"EXTERNALDNS"=>ENV['EXTERNALDNS'], "DOCKERHUBID"=>ENV['DOCKERHUBID'], "DOCKERHUBPASSWD"=>ENV['DOCKERHUBPASSWD']}, privileged: false
 
   # Expose the nomad api and ui to the host
   config.vm.network "forwarded_port", guest: 4646, host: 4646
   # consul
   config.vm.network "forwarded_port", guest: 8500, host: 8500
+  # minio
+  config.vm.network "forwarded_port", guest: 9000, host: 9000
+  config.vm.network "forwarded_port", guest: 36033, host: 36033
   # grafana
   config.vm.network "forwarded_port", guest: 3000, host: 3000
   # prometheus
@@ -205,21 +587,27 @@ Vagrant.configure(2) do |config|
   config.vm.network "forwarded_port", guest: 3200, host: 3200
   # tns app
   config.vm.network "forwarded_port", guest: 8001, host: 8001
+  # Nginx
+  config.vm.network "forwarded_port", guest: 8888, host: 8888
+  # cAdvisor
+  config.vm.network "forwarded_port", guest: 8080, host: 8080
+  # Netdata
+  config.vm.network "forwarded_port", guest: 19999, host: 19999
 
   # Increase memory for Parallels Desktop
   config.vm.provider "parallels" do |p, o|
-    p.memory = "2048"
+    p.memory = "4096"
   end
 
   # Increase memory for Virtualbox
   config.vm.provider "virtualbox" do |vb|
-        vb.memory = "2048"
+    vb.memory = "4096"
   end
 
   # Increase memory for VMware
   ["vmware_fusion", "vmware_workstation"].each do |p|
     config.vm.provider p do |v|
-      v.vmx["memsize"] = "2048"
+      v.vmx["memsize"] = "4096"
     end
   end
 end

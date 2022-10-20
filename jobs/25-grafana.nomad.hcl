@@ -7,7 +7,7 @@ job "grafana" {
 
     network {
       dns {
-        servers = ["172.17.0.1", "8.8.8.8", "8.8.4.4"]
+        servers = ["172.17.0.1", "1.0.0.1", "8.8.4.4"]
       }
       port "http" {
         static = 3000
@@ -33,16 +33,23 @@ job "grafana" {
         GF_LOG_MODE           = "console"
         GF_SERVER_HTTP_PORT   = "${NOMAD_PORT_http}"
         GF_PATHS_PROVISIONING = "/local/grafana/provisioning"
+        GF_PATHS_CONFIG       = "/local/grafana/config/grafana.ini"
+        DB_USER               = "grafana"
+        DB_PASSWORD           = "rootpassword"
       }
 
       template {
         data        = <<EOTC
 apiVersion: 1
+deleteDatasources:
+  - name: Tempo
+  - name: Prometheus
 datasources:
   - name: Prometheus
     type: prometheus
+    uid: prom
     access: proxy
-    url: http://prometheus.service.dc1.consul:9090
+    url: http://prometheus.service.consul:9091
     jsonData:
       exemplarTraceIdDestinations:
       - name: traceID
@@ -50,12 +57,38 @@ datasources:
   - name: Tempo
     type: tempo
     access: proxy
-    url: http://tempo.service.dc1.consul:3400
+    url: http://tempo.service.consul:3400
     uid: tempo
+    jsonData:
+      httpMethod: GET
+      tracesToLogs:
+        datasourceUid: 'loki'
+        tags: ['job', 'instance', 'pod', 'namespace']
+        mappedTags: [{ key: 'service.name', value: 'service' }]
+        mapTagNamesEnabled: false
+        spanStartTimeShift: '1h'
+        spanEndTimeShift: '1h'
+        filterByTraceID: false
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: prom
+        tags: [{ key: 'service.name', value: 'service' }, { key: 'job' }]
+        queries:
+          - name: 'Span Latency Query'
+            query: 'sum(rate(traces_spanmetrics_latency_bucket{$__tags}[5m]))'
+      serviceMap:
+        datasourceUid: 'prom'
+      search:
+        hide: false
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: 'loki'
   - name: Loki
     type: loki
     access: proxy
-    url: http://loki.service.dc1.consul:3100
+    uid: loki
+    url: http://loki.service.consul:3100
     jsonData:
       derivedFields:
         - datasourceUid: tempo
@@ -71,20 +104,35 @@ EOTC
         destination = "/local/grafana/provisioning/dashboards/dashboard.yaml"
       }
       artifact {
-        source      = "https://raw.githubusercontent.com/cyriltovena/observability-nomad/main/provisioning/dashboard.json"
+        source      = "https://raw.githubusercontent.com/alfkonee/observability-nomad/main/config/grafana.ini"
+        mode        = "file"
+        destination = "/local/grafana/config/grafana.ini"
+      }
+      artifact {
+        source      = "https://raw.githubusercontent.com/obourdon/observability-nomad/sqsc/provisioning/docker-dashboard.json"
         mode        = "file"
         destination = "/local/grafana/dashboards/tns.json"
+      }
+      artifact {
+        source      = "https://raw.githubusercontent.com/obourdon/observability-nomad/sqsc/provisioning/node-exporter-dashboard.json"
+        mode        = "file"
+        destination = "/local/grafana/dashboards/node-exporter.json"
+      }
+      artifact {
+        source      = "https://raw.githubusercontent.com/obourdon/observability-nomad/sqsc/provisioning/cadvisor-dashboard.json"
+        mode        = "file"
+        destination = "/local/grafana/dashboards/cadvisor.json"
       }
 
       resources {
         cpu    = 100
-        memory = 100
+        memory = 150
       }
 
       service {
         name = "grafana"
         port = "http"
-        tags = ["monitoring","prometheus"]
+        tags = ["monitoring", "prometheus"]
 
         check {
           name     = "Grafana HTTP"

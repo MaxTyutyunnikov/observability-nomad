@@ -7,7 +7,7 @@ job "loki" {
 
     network {
       dns {
-        servers = ["172.17.0.1", "8.8.8.8", "8.8.4.4"]
+        servers = ["172.17.0.1", "1.0.0.1", "8.8.4.4"]
       }
       port "http" {
         static = 3100
@@ -24,30 +24,36 @@ job "loki" {
       driver = "docker"
 
       env {
-        JAEGER_AGENT_HOST    = "tempo.service.dc1.consul"
+        JAEGER_AGENT_HOST    = "tempo.service.consul"
         JAEGER_TAGS          = "cluster=nomad"
         JAEGER_SAMPLER_TYPE  = "probabilistic"
         JAEGER_SAMPLER_PARAM = "1"
       }
 
       config {
-        image = "grafana/loki:demo"
+        image = "grafana/loki:latest"
         ports = ["http"]
         args = [
           "-config.file",
-          "/etc/loki/local-config.yaml",
+          "/local/etc/loki/local-config.yaml",
         ]
       }
 
       resources {
-        cpu    = 200
-        memory = 200
+        cpu    = 1000
+        memory = 170
+      }
+
+      artifact {
+        source      = "https://raw.githubusercontent.com/alfkonee/observability-nomad/main/config/loki-local-config.yaml"
+        mode        = "file"
+        destination = "/local/etc/loki/local-config.yaml"
       }
 
       service {
         name = "loki"
         port = "http"
-        tags = ["monitoring","prometheus"]
+        tags = ["monitoring", "prometheus"]
 
         check {
           name     = "Loki HTTP"

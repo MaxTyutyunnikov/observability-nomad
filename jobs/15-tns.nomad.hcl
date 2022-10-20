@@ -7,7 +7,7 @@ job "tns" {
 
     network {
       dns {
-        servers = ["172.17.0.1", "8.8.8.8", "8.8.4.4"]
+        servers = ["172.17.0.1", "1.0.0.1", "8.8.4.4"]
       }
       port "db" {
         static = 8000
@@ -32,13 +32,13 @@ job "tns" {
     task "db" {
       driver = "docker"
       env {
-        JAEGER_AGENT_HOST    = "tempo.service.dc1.consul"
+        JAEGER_AGENT_HOST    = "tempo.service.consul"
         JAEGER_TAGS          = "cluster=nomad"
         JAEGER_SAMPLER_TYPE  = "probabilistic"
         JAEGER_SAMPLER_PARAM = "1"
       }
       config {
-        image = "grafana/tns-db:demo"
+        image = "grafana/tns-db:latest"
         ports = ["db"]
 
         args = [
@@ -50,59 +50,59 @@ job "tns" {
       service {
         name = "db"
         port = "db"
-        tags = ["app","prometheus"]
+        tags = ["app", "prometheus"]
       }
     }
 
     task "app" {
       driver = "docker"
       env {
-        JAEGER_AGENT_HOST    = "tempo.service.dc1.consul"
+        JAEGER_AGENT_HOST    = "tempo.service.consul"
         JAEGER_TAGS          = "cluster=nomad"
         JAEGER_SAMPLER_TYPE  = "probabilistic"
         JAEGER_SAMPLER_PARAM = "1"
       }
       config {
-        image = "grafana/tns-app:demo"
+        image = "grafana/tns-app:latest"
         ports = ["app"]
 
         args = [
           "-log.level=debug",
           "-server.http-listen-port=${NOMAD_PORT_app}",
-          "http://db.service.dc1.consul:${NOMAD_PORT_db}",
+          "http://db.service.consul:${NOMAD_PORT_db}",
         ]
       }
 
       service {
         name = "app"
         port = "app"
-        tags = ["app","prometheus"]
+        tags = ["app", "prometheus"]
       }
     }
 
     task "loadgen" {
       driver = "docker"
       env {
-        JAEGER_AGENT_HOST    = "tempo.service.dc1.consul"
+        JAEGER_AGENT_HOST    = "tempo.service.consul"
         JAEGER_TAGS          = "cluster=nomad"
         JAEGER_SAMPLER_TYPE  = "probabilistic"
         JAEGER_SAMPLER_PARAM = "1"
       }
       config {
-        image = "grafana/tns-loadgen:demo"
+        image = "grafana/tns-loadgen:latest"
         ports = ["loadgen"]
 
         args = [
           "-log.level=debug",
           "-server.http-listen-port=${NOMAD_PORT_loadgen}",
-          "http://app.service.dc1.consul:${NOMAD_PORT_app}",
+          "http://app.service.consul:${NOMAD_PORT_app}",
         ]
       }
 
       service {
         name = "loadgen"
         port = "loadgen"
-        tags = ["app","prometheus"]
+        tags = ["app", "prometheus"]
       }
     }
   }

@@ -8,7 +8,7 @@ job "promtail" {
 
     network {
       dns {
-        servers = ["172.17.0.1", "8.8.8.8", "8.8.4.4"]
+        servers = ["172.17.0.1", "1.0.0.1", "8.8.4.4"]
       }
       port "http" {
         static = 3200
@@ -33,12 +33,13 @@ positions:
   filename: /data/positions.yaml
 
 clients:
-  - url: http://loki.service.dc1.consul:3100/loki/api/v1/push
+  - url: http://loki.service.consul:3100/loki/api/v1/push
 
 scrape_configs:
 - job_name: 'nomad-logs'
   consul_sd_configs:
-    - server: '172.17.0.1:8500'
+    - server: 'consul.service.consul:8500'
+      token: '[REPLACE_WITH_CONSUL_TOKEN]'
   relabel_configs:
     - source_labels: [__meta_consul_node]
       target_label: __host__
@@ -69,7 +70,7 @@ EOTC
       }
 
       config {
-        image = "grafana/promtail:demo"
+        image = "grafana/promtail:latest"
         ports = ["http"]
         args = [
           "-config.file=/local/promtail.yml",
@@ -89,7 +90,7 @@ EOTC
       service {
         name = "promtail"
         port = "http"
-        tags = ["monitoring","prometheus"]
+        tags = ["monitoring", "prometheus"]
 
         check {
           name     = "Promtail HTTP"
